@@ -65,6 +65,16 @@ func getVocabDict(mergeDict map[Pair]int) map[int][]byte {
 	return vocabDict
 }
 
+func decode(ids []int, vocabDict map[int][]byte) string {
+	var tokens []byte
+	for _, idx := range ids {
+		if seq, ok := vocabDict[idx]; ok {
+			tokens = append(tokens, seq...)
+		}
+	}
+	return string(tokens)
+}
+
 func main() {
 	// コーパス読み込み
 	filePath := "corpus/hatsukoi.txt"
@@ -104,4 +114,7 @@ func main() {
 	mergeRules := map[Pair]int{best: 256}
 	vocab := getVocabDict(mergeRules)
 	fmt.Printf("\nVocab entry for ID 256: %v\n", vocab[256])
+
+	decoded := decode(mergedIds, vocab)
+	fmt.Println(string([]rune(decoded)[:50]))
 }
