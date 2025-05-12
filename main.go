@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 )
 
@@ -75,6 +76,35 @@ func decode(ids []int, vocabDict map[int][]byte) string {
 	return string(tokens)
 }
 
+func convertByteToInt(data []byte) []int {
+	ids := make([]int, len(data))
+	for i, b := range data {
+		ids[i] = int(b)
+	}
+	return ids
+}
+
+func encode(text string, mergeDict map[Pair]int) []int {
+	tokens := convertByteToInt([]byte(text))
+	for len(tokens) > 1 {
+		stats := getStats(tokens)
+		minRank := math.MaxInt
+		var best Pair
+		for pair := range stats {
+			if rank, ok := mergeDict[pair]; ok && rank < minRank {
+				minRank = rank
+				best = pair
+			}
+		}
+		if minRank == math.MaxInt {
+			break
+		}
+		newId := mergeDict[best]
+		tokens = merge(tokens, best, newId)
+	}
+	return tokens
+}
+
 func main() {
 	// コーパス読み込み
 	filePath := "corpus/hatsukoi.txt"
@@ -108,13 +138,17 @@ func main() {
 	fmt.Printf("\nMerging best pair (%d, %d)→ new ID %d\n\n", best.First, best.Second, 256)
 
 	mergedIds := merge(ids, best, 256)
-	fmt.Printf("Original length: %d, Merged length: %d\n", len(ids), len(mergedIds))
+	fmt.Printf("Original length: %d, Merged length: %d\n\n", len(ids), len(mergedIds))
 
 	// 例：getVocabDict で辞書を構築
 	mergeRules := map[Pair]int{best: 256}
 	vocab := getVocabDict(mergeRules)
-	fmt.Printf("\nVocab entry for ID 256: %v\n", vocab[256])
+	fmt.Printf("Vocab entry for ID 256: %v\n\n", vocab[256])
 
 	decoded := decode(mergedIds, vocab)
-	fmt.Println(string([]rune(decoded)[:50]))
+	decodedText := string([]rune(decoded)[:100])
+	fmt.Printf("Decoded: \n%s\n\n", decodedText)
+
+	encoded := encode(decodedText, mergeRules)
+	fmt.Printf("Encoded: \n%v\n", encoded)
 }
