@@ -1604,3 +1604,536 @@ func encode(text string, mergeDict map[Pair]int) []int {
 * その後 **(256,67)→257** を当てはめる
 
 という逐次的なペアマージによって、最終的により長い連続バイト列がひとつの ID に収束していくことです。
+
+# me
+```
+package main
+
+import (
+	"fmt"
+	"math"
+	"os"
+	"regexp"
+	"strings"
+)
+
+// Pair は隣接するトークン ID のペアを表します
+type Pair struct {
+	First  int
+	Second int
+}
+
+// getStats は ids スライス中の隣接ペア出現回数をカウントして返します。
+// Python の zip(ids, ids[1:]) 相当です。
+func getStats(ids []int) map[Pair]int {
+	stats := make(map[Pair]int)
+	for i := 0; i < len(ids)-1; i++ {
+		p := Pair{First: ids[i], Second: ids[i+1]}
+		stats[p] = stats[p] + 1
+	}
+	return stats
+}
+
+// merge は ids の中から pair.First, pair.Second の隣接ペアを
+// すべて idx という新しいトークン ID にまとめて返します。
+func merge(ids []int, pair Pair, idx int) []int {
+	newIds := make([]int, 0, len(ids))
+	for i := 0; i < len(ids); {
+		if i+1 < len(ids) && ids[i] == pair.First && ids[i+1] == pair.Second {
+			newIds = append(newIds, idx)
+			i += 2
+		} else {
+			newIds = append(newIds, ids[i])
+			i++
+		}
+	}
+	return newIds
+}
+
+// getVocabDict は、mergeDict で指定されたマージルール（ペア→新ID）をもとに
+// 「ID→バイト列」を構築します。
+// 0–255 は初期バイト、以降の ID はマージ済みバイト列として登録します。
+func getVocabDict(mergeDict map[Pair]int) map[int][]byte {
+	vocabDict := make(map[int][]byte, len(mergeDict)+256)
+
+	// 0–255 は単一バイトとして初期化
+	for i := 0; i < 256; i++ {
+		vocabDict[i] = []byte{byte(i)}
+	}
+
+	// マージルールに従って辞書を拡張
+	for pair, idx := range mergeDict {
+		seq0, ok0 := vocabDict[pair.First]
+		seq1, ok1 := vocabDict[pair.Second]
+		if !ok0 || !ok1 {
+			// 片方でも未定義ならスキップ
+			continue
+		}
+		// バイト列を連結して新しいエントリに登録
+		merged := append(append([]byte{}, seq0...), seq1...)
+		vocabDict[idx] = merged
+	}
+
+	return vocabDict
+}
+
+func decode(ids []int, vocabDict map[int][]byte) string {
+	var tokens []byte
+	for _, idx := range ids {
+		if seq, ok := vocabDict[idx]; ok {
+			tokens = append(tokens, seq...)
+		}
+	}
+	return string(tokens)
+}
+
+func convertByteToInt(data []byte) []int {
+	ids := make([]int, len(data))
+	for i, b := range data {
+		ids[i] = int(b)
+	}
+	return ids
+}
+
+func encode(text string, mergeDict map[Pair]int) []int {
+	tokens := convertByteToInt([]byte(text))
+	for len(tokens) > 1 {
+		stats := getStats(tokens)
+		minRank := math.MaxInt
+		var best Pair
+		for pair := range stats {
+			if rank, ok := mergeDict[pair]; ok && rank < minRank {
+				minRank = rank
+				best = pair
+			}
+		}
+		if minRank == math.MaxInt {
+			break
+		}
+		newId := mergeDict[best]
+		tokens = merge(tokens, best, newId)
+	}
+	return tokens
+}
+
+func train(text string) map[Pair]int {
+	parts := []string{
+		// 英語の単語＋接尾辞 ('s, 're など) をキャプチャ
+		`[^\r\n\p{L}\p{N}]?` +
+			`[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*` +
+			`[\p{Ll}\p{Lm}\p{Lo}\p{M}]+` +
+			`(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+		`[^\r\n\p{L}\p{N}]?` +
+			`[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+` +
+			`[\p{Ll}\p{Lm}\p{Lo}\p{M}]*` +
+			`(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+		// 数字 1～3 桁
+		`\p{N}{1,3}`,
+		// 単独の記号と続く改行やスラッシュ
+		` ?[^\s\p{L}\p{N}]+[\r\n/]*`,
+		// 連続改行
+		`\s*[\r\n]+`,
+		// 空白（肯定先読みは外しています）
+		`\s+`,
+	}
+	pattern := strings.Join(parts, "|")
+	re := regexp.MustCompile(pattern)
+
+	matchedTexts := re.FindAllString(text, -1)
+
+	// fmt.Println(len(matchedTexts))
+
+	mergeDict := make(map[Pair]int)
+	maxTokenId := 255
+
+	for i, matchedText := range matchedTexts {
+		if i == 30 {
+			break
+		}
+
+		matchedTokens := []byte(matchedText)
+		ids := convertByteToInt(matchedTokens)
+
+		mergeNum := 100
+
+		for i := 0; i < mergeNum; i++ {
+			stats := getStats(ids)
+			if len(stats) >= 1 {
+				var best Pair
+				maxCnt := 0
+				for p, cnt := range stats {
+					if cnt > maxCnt {
+						maxCnt = cnt
+						best = p
+					}
+				}
+				maxTokenId++
+				ids = merge(ids, best, maxTokenId)
+				mergeDict[best] = maxTokenId
+			}
+
+			if len(stats) == 0 {
+				break
+			}
+		}
+	}
+
+	return mergeDict
+}
+
+// func main() {
+// 	// コーパス読み込み
+// 	filePath := "corpus/hatsukoi.txt"
+// 	data, err := os.ReadFile(filePath)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	text := string(data)
+// 	train(text)
+// }
+
+func main() {
+	// コーパス読み込み
+	filePath := "corpus/hatsukoi.txt"
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		panic(err)
+	}
+
+	// []byte → []int に変換（ID 化）
+	ids := make([]int, len(data))
+	for i, b := range data {
+		ids[i] = int(b)
+	}
+
+	// 隣接ペアの頻度計算
+	stats := getStats(ids)
+	fmt.Println("Pair frequencies:")
+	for p, cnt := range stats {
+		fmt.Printf("  (%d, %d): %d\n", p.First, p.Second, cnt)
+	}
+
+	// 例：最頻出ペアを１つ取得して merge を試す
+	var best Pair
+	maxCnt := 0
+	for p, cnt := range stats {
+		if cnt > maxCnt {
+			maxCnt = cnt
+			best = p
+		}
+	}
+	fmt.Printf("\nMerging best pair (%d, %d)→ new ID %d\n\n", best.First, best.Second, 256)
+
+	mergedIds := merge(ids, best, 256)
+	fmt.Printf("Original length: %d, Merged length: %d\n\n", len(ids), len(mergedIds))
+
+	// 例：getVocabDict で辞書を構築
+	mergeRules := map[Pair]int{best: 256}
+	vocab := getVocabDict(mergeRules)
+	fmt.Printf("Vocab entry for ID 256: %v\n\n", vocab[256])
+
+	decoded := decode(mergedIds, vocab)
+	decodedText := string([]rune(decoded)[:100])
+	fmt.Printf("Decoded: \n%s\n\n", decodedText)
+
+	encoded := encode(decodedText, mergeRules)
+	fmt.Printf("Encoded: \n%v\n", encoded)
+}
+```
+
+作成したGoコードはこのようになりました。修正をお願いします。
+
+# lm
+以下の Go コードに、日本語のコメントを追加して各関数や処理の役割を明確にしました。ご確認ください。
+
+```go
+package main
+
+import (
+    "fmt"
+    "math"
+    "os"
+    "regexp"
+    "strings"
+)
+
+// Pair は隣接するトークン ID のペアを表現します。
+// BPE のマージルールでは、このペア (First, Second) がまとめられて新しい ID に置き換えられます。
+type Pair struct {
+    First  int
+    Second int
+}
+
+// getStats は、与えられたトークン ID のスライスから
+// すべての隣接ペアの出現回数をカウントして map にして返します。
+// 例：ids = [A,B,B,C] → {(A,B):1, (B,B):1, (B,C):1}
+func getStats(ids []int) map[Pair]int {
+    stats := make(map[Pair]int)
+    for i := 0; i+1 < len(ids); i++ {
+        p := Pair{First: ids[i], Second: ids[i+1]}
+        stats[p]++
+    }
+    return stats
+}
+
+// merge は、ids の中で pair.First, pair.Second が隣接して現れるすべての箇所を
+// 新しいトークン ID idx にまとめて置き換えた新しいスライスを返します。
+// これが BPE の「１ステップのマージ操作」に相当します。
+func merge(ids []int, pair Pair, idx int) []int {
+    out := make([]int, 0, len(ids))
+    for i := 0; i < len(ids); {
+        // ペアにマッチしたら新しい ID を追加し、元の２要素をスキップ
+        if i+1 < len(ids) && ids[i] == pair.First && ids[i+1] == pair.Second {
+            out = append(out, idx)
+            i += 2
+        } else {
+            // マッチしなければそのまま現在のトークンをコピー
+            out = append(out, ids[i])
+            i++
+        }
+    }
+    return out
+}
+
+// getVocabDict は、学習済みのマージルール mergeDict をもとに
+// 「トークン ID → 実際のバイト列」の辞書を構築します。
+// まず 0–255 は単一バイトで初期化し、その後 mergeDict の順にマージした
+// バイト列を追加していきます。
+func getVocabDict(mergeDict map[Pair]int) map[int][]byte {
+    vocab := make(map[int][]byte, len(mergeDict)+256)
+
+    // --- 初期化: 0–255 を単一バイトで登録 ---
+    for i := 0; i < 256; i++ {
+        vocab[i] = []byte{byte(i)}
+    }
+
+    // --- マージルールに従って辞書を拡張 ---
+    // mergeDict に登録された順序は学習時の優先順位（rank）に相当
+    for pair, idx := range mergeDict {
+        seqA, okA := vocab[pair.First]
+        seqB, okB := vocab[pair.Second]
+        if !okA || !okB {
+            // いずれかのエントリが未定義なら飛ばす
+            continue
+        }
+        // バイト列を append で連結し、新しい ID に登録
+        vocab[idx] = append(append([]byte{}, seqA...), seqB...)
+    }
+    return vocab
+}
+
+// decode は、トークン ID の列をバイト列に戻し、UTF-8 文字列として返します。
+// 不正なバイト列は自動的に置換文字 (�) に変換されます。
+func decode(ids []int, vocab map[int][]byte) string {
+    var buf []byte
+    for _, id := range ids {
+        if seq, ok := vocab[id]; ok {
+            buf = append(buf, seq...)
+        }
+    }
+    return string(buf)
+}
+
+// convertBytesToInts は、[]byte を []int に変換します。
+// トークン ID として扱うための準備関数です。
+func convertBytesToInts(b []byte) []int {
+    out := make([]int, len(b))
+    for i, c := range b {
+        out[i] = int(c)
+    }
+    return out
+}
+
+// encode は、テキストを UTF-8 バイト → []int に変換し、
+// mergeDict に従って可能な限り BPE のマージを適用した結果を返します。
+// 返り値は「最終的なトークン ID の列」です。
+func encode(text string, mergeDict map[Pair]int) []int {
+    // ① 生テキスト → バイト列 → ID 列に変換
+    tokens := convertBytesToInts([]byte(text))
+
+    // ② BPE マージ可能な限り繰り返す
+    for {
+        if len(tokens) < 2 {
+            // トークン列が 1 つ以下ならマージ不要
+            break
+        }
+        // ②-a 隣接ペアごとの出現カウント
+        stats := getStats(tokens)
+
+        // ②-b mergeDict から「最も優先順位の高いペア」を探す
+        minRank := math.MaxInt
+        var best Pair
+        for pair := range stats {
+            if rank, ok := mergeDict[pair]; ok && rank < minRank {
+                minRank, best = rank, pair
+            }
+        }
+        if minRank == math.MaxInt {
+            // どのペアもルールに登録されていなければ終了
+            break
+        }
+
+        // ②-c ペアをマージして tokens を更新
+        tokens = merge(tokens, best, mergeDict[best])
+    }
+    return tokens
+}
+
+// train は、入力テキストを正規表現で前処理（英語向け）し、
+// 各チャンクに対して BPE の学習（ペアの頻度に応じたマージルール生成）を行います。
+// 実践投入用には日本語なら形態素解析を組み合わせてください。
+func train(text string) map[Pair]int {
+    // --- 前処理パターン (英語向け) ---
+    parts := []string{
+        // 単語本体＋('s, 're など) の一体化
+        `[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*` +
+            `[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+        // 異なる大文字パターン
+        `[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+` +
+            `[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+        // 数字 (1~3桁)
+        `\p{N}{1,3}`,
+        // 記号列＋改行/スラッシュ
+        ` ?[^\s\p{L}\p{N}]+[\r\n/]*`,
+        // 空白 or 改行
+        `\s+`,
+    }
+    re := regexp.MustCompile(strings.Join(parts, "|"))
+
+    // テキストをチャンクに分割
+    chunks := re.FindAllString(text, -1)
+
+    mergeDict := make(map[Pair]int)
+    nextID := 256 // 新しいトークン ID のカウンタ
+
+    // 各チャンクごとにマージルールを学習
+    for _, chunk := range chunks {
+        // チャンクをバイト→ID 列に
+        ids := convertBytesToInts([]byte(chunk))
+        // 例として最大 100 ステップだけマージ
+        for iter := 0; iter < 100; iter++ {
+            stats := getStats(ids)
+            if len(stats) == 0 {
+                break
+            }
+            // 最頻出ペアを選択
+            var best Pair
+            maxCnt := 0
+            for p, cnt := range stats {
+                if cnt > maxCnt {
+                    maxCnt, best = cnt, p
+                }
+            }
+            // 新 ID を割り当ててマージ＆ルール登録
+            nextID++
+            ids = merge(ids, best, nextID)
+            mergeDict[best] = nextID
+        }
+    }
+
+    return mergeDict
+}
+
+func main() {
+    // コーパス読み込み
+    data, err := os.ReadFile("corpus/hatsukoi.txt")
+    if err != nil {
+        panic(err)
+    }
+    text := string(data)
+
+    // 1) 学習フェーズ: マージルールを生成
+    merges := train(text)
+    fmt.Printf("学習したマージルール数: %d\n", len(merges))
+
+    // 2) テスト: 簡易サンプルの encode/decode
+    sample := "Hello World!"
+    encoded := encode(sample, merges)
+    fmt.Printf("エンコード結果: %v\n", encoded)
+
+    vocab := getVocabDict(merges)
+    decoded := decode(encoded, vocab)
+    fmt.Printf("デコード結果: %s\n", decoded)
+}
+```
+
+**各部の要点**
+
+* **getStats / merge**：BPE のコア「ペアの頻度集計」と「そのペアをまとめる操作」を担う
+* **getVocabDict**：学習したマージルールから最終的な「ID→バイト列」の辞書を構築
+* **encode**：推論時に与えられたテキストを「学習済みルールでマージを繰り返す」ことでトークン化
+* **train**：正規表現による前処理後、バイト列ごとに繰り返しマージして学習済みルールを生成
+* **main**：学習→テストエンコード・デコード の流れを実行環境としてまとめています。
+
+ご要望に合わせてコメントを追加しましたが、さらに補足が必要な箇所などあればお知らせください。
+
+# me
+質問です。
+
+* nextIDが256始まりだと最初に割り当てられるIDは257になりますよね？256というバイト値はないので、これをIDとして割り当てるべきでは？
+* encodeするときはmergeDictだけ良くて、vocabDictが必要ないのは、mergeされたIDに割り当てることがencodeの目的だからですか？その場合、vocabDictってdecodeの時しか使わないんですかね。
+
+# lm
+以下、順にお答えします。
+
+---
+
+## 1. `nextID` の初期値について
+
+* BPE では最初に扱うトークン ID が **0–255** の「単一バイト」なので、次に割り当てるマージ後のトークンは **256** から始めるのが自然です。
+* 現状のコードでは
+
+  ```go
+  nextID := 256
+  // …
+  nextID++
+  ids = merge(…, nextID)
+  ```
+
+  としているため、最初に使われる新 ID は **257** になってしまっています。
+
+### 修正案
+
+```go
+nextID := 255    // まず 0–255 のバイト ID を使い切ったところからスタート
+// …
+nextID++        // 最初にインクリメントされると 256 になる
+ids = merge(..., nextID)
+```
+
+これでマージ後の最初の ID が 256 となり、0–255 の範囲と重複せず、かつ「256＝最初の新規トークン」という形に揃います。
+
+---
+
+## 2. `encode` に `vocabDict` が不要な理由／`vocabDict` は `decode` 用の辞書
+
+* **`encode` の目的**
+  与えられた文字列を「BPE のマージルール（`mergeDict`）」だけで反復的にまとめ、**最終的に得られるトークン ID 列**を返すことです。
+  ここでは「ID が何のバイト列に対応しているか」は気にせず、どのペアをどの ID に置き換えるかだけが必要なので、`vocabDict` は不要です。
+
+* **`vocabDict` の役割**
+  `mergeDict` は「(A,B) を ID=X にまとめる」というルールを持つだけですが、`vocabDict` はそのルールを展開して **「ID → 実際のバイト列 (または文字列)」** を保持する辞書です。
+  これは **`decode`** 時に、ID 列を元のテキストに戻すとき、またはモデルの出力トークン ID を文字列化するときに使います。
+
+まとめると：
+
+* **`encode`**
+
+  * 入力：文字列、`mergeDict`
+  * 出力：BPE マージ後のトークン ID 列
+  * 使うもの：`mergeDict`（どのペアを何の ID にまとめるか）
+
+* **`decode`**
+
+  * 入力：トークン ID 列、`vocabDict`
+  * 出力：対応するバイト列→文字列
+  * 使うもの：`vocabDict`（各 ID がどのバイト列を表すか）
+
+---
+
+以上を踏まえて、
+
+1. **`nextID` は 255 から始めて最初にインクリメントすると 256 になる** ように修正
+2. **`vocabDict` は「decode 用の辞書」であり、`encode` には不要**
+
+と理解していただければスッキリすると思います。
