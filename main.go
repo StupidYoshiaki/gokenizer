@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
+	"strings"
 )
 
 // Pair は隣接するトークン ID のペアを表します
@@ -104,6 +106,82 @@ func encode(text string, mergeDict map[Pair]int) []int {
 	}
 	return tokens
 }
+
+func train(text string) map[Pair]int {
+	parts := []string{
+		// 英語の単語＋接尾辞 ('s, 're など) をキャプチャ
+		`[^\r\n\p{L}\p{N}]?` +
+			`[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*` +
+			`[\p{Ll}\p{Lm}\p{Lo}\p{M}]+` +
+			`(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+		`[^\r\n\p{L}\p{N}]?` +
+			`[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+` +
+			`[\p{Ll}\p{Lm}\p{Lo}\p{M}]*` +
+			`(?i:'s|'t|'re|'ve|'m|'ll|'d)?`,
+		// 数字 1～3 桁
+		`\p{N}{1,3}`,
+		// 単独の記号と続く改行やスラッシュ
+		` ?[^\s\p{L}\p{N}]+[\r\n/]*`,
+		// 連続改行
+		`\s*[\r\n]+`,
+		// 空白（肯定先読みは外しています）
+		`\s+`,
+	}
+	pattern := strings.Join(parts, "|")
+	re := regexp.MustCompile(pattern)
+
+	matchedTexts := re.FindAllString(text, -1)
+
+	// fmt.Println(len(matchedTexts))
+
+	mergeDict := make(map[Pair]int)
+	maxTokenId := 255
+
+	for i, matchedText := range matchedTexts {
+		if i == 30 {
+			break
+		}
+
+		matchedTokens := []byte(matchedText)
+		ids := convertByteToInt(matchedTokens)
+
+		mergeNum := 100
+
+		for i := 0; i < mergeNum; i++ {
+			stats := getStats(ids)
+			if len(stats) >= 1 {
+				var best Pair
+				maxCnt := 0
+				for p, cnt := range stats {
+					if cnt > maxCnt {
+						maxCnt = cnt
+						best = p
+					}
+				}
+				maxTokenId++
+				ids = merge(ids, best, maxTokenId)
+				mergeDict[best] = maxTokenId
+			}
+
+			if len(stats) == 0 {
+				break
+			}
+		}
+	}
+
+	return mergeDict
+}
+
+// func main() {
+// 	// コーパス読み込み
+// 	filePath := "corpus/hatsukoi.txt"
+// 	data, err := os.ReadFile(filePath)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	text := string(data)
+// 	train(text)
+// }
 
 func main() {
 	// コーパス読み込み
